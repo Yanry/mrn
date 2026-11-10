@@ -54,27 +54,26 @@ class MergeReductionTreeSim extends AnyFunSuite {
         val ready = readyPattern(cycle)
         dut.io.output.ready #= ready
         sleep(1)
-        if (dut.io.output.valid.toBoolean && !dut.io.output.ready.toBoolean) {
-          val current = Item(
+        val outputValid = dut.io.output.valid.toBoolean
+        val current = if (outputValid) {
+          assert(dut.io.output.payload.valid.toBoolean, "valid output must have a valid payload")
+          Some(Item(
             dut.io.output.payload.row.toInt,
             dut.io.output.payload.col.toInt,
             dut.io.output.payload.value.toInt
-          )
-          stalledValue.foreach(previous => assert(current == previous))
-          stalledValue = Some(current)
+          ))
         } else {
-          stalledValue = None
+          None
         }
+        stalledValue.foreach(previous => assert(current.contains(previous), "output changed while stalled"))
+        stalledValue = if (outputValid && !ready) current else None
 
         for (lane <- lanes.indices) {
           if (dut.io.push(lane).valid.toBoolean && dut.io.push(lane).ready.toBoolean) sent(lane) += 1
         }
-        if (dut.io.output.valid.toBoolean && dut.io.output.ready.toBoolean) {
-          received += Item(
-            dut.io.output.payload.row.toInt,
-            dut.io.output.payload.col.toInt,
-            dut.io.output.payload.value.toInt
-          )
+        if (outputValid && ready) {
+          received += current.get
+          assert(received.size <= expected.size, s"unexpected output: $received")
         }
         dut.clockDomain.waitSampling()
         cycle += 1
@@ -83,11 +82,27 @@ class MergeReductionTreeSim extends AnyFunSuite {
       assert(received.toSeq == expected, s"received=$received expected=$expected")
       assert(sent.zip(lanes).forall { case (count, input) => count == input.size })
 
-      for (_ <- 0 until 8) {
+      for (lane <- lanes.indices) {
+        dut.io.push(lane).valid #= false
+        dut.io.laneDone(lane) #= true
+      }
+      var drained = false
+      var drainCycles = 0
+      while (!drained && drainCycles < 400) {
         dut.io.output.ready #= true
+        sleep(1)
+        assert(!dut.io.output.valid.toBoolean, "extra output after expected sequence")
+        drained = dut.io.done.toBoolean
+        dut.clockDomain.waitSampling()
+        drainCycles += 1
+      }
+      assert(drained, "done must wait until the tree is drained")
+      for (_ <- 0 until 4) {
+        sleep(1)
+        assert(dut.io.done.toBoolean && !dut.io.output.valid.toBoolean,
+          "done must remain asserted without extra output")
         dut.clockDomain.waitSampling()
       }
-      assert(dut.io.done.toBoolean, "done must wait until the tree is drained")
     }
   }
 
@@ -166,5 +181,43 @@ class MergeReductionTreeSim extends AnyFunSuite {
       Seq(Item(0, 0, one), Item(0, 1, two), Item(0, 2, three)),
       cycle => cycle % 3 != 1
     )
+  }
+
+  test("reduces across all four levels of a 16-lane tree") {
+    // Every lane contributes at (0,1), then has a distinct (col,row)=(2,15-lane).
+    // The second heads are reverse-ordered across lanes, not sorted as a vector.
+    val lanes = (0 until 16).map { lane =>
+      Seq(Item(0, 1, one), Item(15 - lane, 2, two))
+    }
+    val expected = Seq(Item(0, 1, 0x4c00)) ++
+      (0 until 16).map(row => Item(row, 2, two))
+    runCase(lanes, expected, cycle => cycle % 7 < 3)
+  }
+
+  test("handles delayed and empty branches in a 16-lane tree") {
+    val lanes = (0 until 16).map { lane =>
+      if (lane % 2 == 0) Seq.empty[Item]
+      else Seq(Item(0, 0, one), Item(15 - lane, 1, two))
+    }
+    val expected = Seq(Item(0, 0, 0x4800)) ++
+      (0 until 16 by 2).map(row => Item(row, 1, two))
+    runCase(
+      lanes,
+      expected,
+      readyPattern = cycle => cycle % 6 != 0,
+      startDelays = (0 until 16).map(lane => (lane % 4) * 3)
+    )
+  }
+
+  test("streams more than FIFO depth through 16 lanes with backpressure") {
+    // Ten elements per lane exceed the eight-entry input FIFO. Four lanes
+    // contribute 1.0 to each (col,row), so every expected sum is 4.0.
+    val lanes = (0 until 16).map { lane =>
+      (0 until 10).map(col => Item(lane % 4, col, one))
+    }
+    val expected = (0 until 10).flatMap { col =>
+      (0 until 4).map(row => Item(row, col, 0x4400))
+    }
+    runCase(lanes, expected, cycle => cycle % 9 >= 4)
   }
 }
