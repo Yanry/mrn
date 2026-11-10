@@ -82,5 +82,5 @@ case class MergeReductionTree(
 
 object GenerateMergeReductionTree extends App {
   SpinalConfig(targetDirectory = "rtl")
-    .generateVerilog(MergeReductionTree(laneCount = 3, fifoDepth = 4, rowWidth = 8, colWidth = 8))
+    .generateVerilog(MergeReductionTree(laneCount = 16, fifoDepth = 8, rowWidth = 8, colWidth = 8))
 }

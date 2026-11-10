@@ -9,6 +9,12 @@ class MergeReductionTreeSim extends AnyFunSuite {
   private val three = 0x4200
   private val five = 0x4500
   private val six = 0x4600
+  private val half = 0x3800
+  private val oneAndHalf = 0x3e00
+  private val twoAndHalf = 0x4100
+  private val minusHalf = 0xb800
+  private val minusOne = 0xbc00
+  private val minusTwo = 0xc000
 
   private def runCase(
       lanes: Seq[Seq[Item]],
@@ -219,5 +225,56 @@ class MergeReductionTreeSim extends AnyFunSuite {
       (0 until 4).map(row => Item(row, col, 0x4400))
     }
     runCase(lanes, expected, cycle => cycle % 9 >= 4)
+  }
+
+  test("merges mixed values and interleaved coordinates across 16 lanes") {
+    val lanes = Seq(
+      Seq(Item(4, 0, oneAndHalf), Item(0, 2, two), Item(5, 4, minusOne)),
+      Seq(Item(1, 0, minusOne), Item(3, 1, three), Item(2, 3, half)),
+      Seq(Item(0, 1, twoAndHalf), Item(4, 2, one), Item(2, 4, minusTwo)),
+      Seq(Item(2, 0, 0x4400), Item(1, 2, oneAndHalf), Item(0, 4, two)),
+      Seq(Item(4, 0, half)),
+      Seq(Item(3, 1, minusTwo)),
+      Seq(Item(0, 1, minusHalf)),
+      Seq(Item(1, 2, minusHalf)),
+      Seq(Item(2, 0, minusOne)),
+      Seq(Item(4, 2, oneAndHalf)),
+      Seq(Item(2, 3, twoAndHalf)),
+      Seq(Item(5, 4, three)),
+      Seq(Item(6, 0, minusTwo), Item(0, 4, one)),
+      Seq(Item(0, 0, five), Item(2, 4, oneAndHalf)),
+      Seq(Item(5, 1, half), Item(0, 2, minusOne)),
+      Seq(Item(1, 0, twoAndHalf), Item(0, 4, minusHalf))
+    )
+    val expected = Seq(
+      Item(0, 0, five), Item(1, 0, oneAndHalf), Item(2, 0, three),
+      Item(4, 0, two), Item(6, 0, minusTwo),
+      Item(0, 1, two), Item(3, 1, one), Item(5, 1, half),
+      Item(0, 2, one), Item(1, 2, one), Item(4, 2, twoAndHalf),
+      Item(2, 3, three),
+      Item(0, 4, twoAndHalf), Item(2, 4, minusHalf), Item(5, 4, two)
+    )
+    runCase(
+      lanes,
+      expected,
+      readyPattern = cycle => cycle % 11 >= 3,
+      startDelays = (0 until 16).map(lane => (lane * 5) % 13)
+    )
+  }
+
+  test("reduces mixed signs at one coordinate after reverse-ordered 16-lane heads") {
+    val secondValues = Seq(two, minusOne, half, three, minusTwo, oneAndHalf, twoAndHalf, minusHalf)
+    val sharedValues = Seq(one, half, minusHalf, two)
+    val lanes = (0 until 16).map { lane =>
+      val firstValue = if (lane < 8) one else secondValues(lane - 8)
+      Seq(Item(7 - lane % 8, 0, firstValue), Item(1, 2, sharedValues(lane % 4)))
+    }
+    val expected = Seq(
+      Item(0, 0, half), Item(1, 0, 0x4300), Item(2, 0, twoAndHalf),
+      Item(3, 0, minusOne), Item(4, 0, 0x4400), Item(5, 0, oneAndHalf),
+      Item(6, 0, 0x0000), Item(7, 0, three),
+      Item(1, 2, 0x4a00)
+    )
+    runCase(lanes, expected, cycle => cycle % 5 <= 2)
   }
 }
